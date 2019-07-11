@@ -1,0 +1,277 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf8">
+    <title>C/C++ Rounding Cheat Sheet</title>
+    <link rel="stylesheet" href="css/reveal.css">
+    <link rel="stylesheet" href="css/theme/black.css">
+    <link rel="stylesheet" href="css/highlight/zenburn.css">
+    <style>
+del {
+  text-decoration: red line-through;
+/* color: red; */
+}
+
+.reveal .fleft {
+  float: left;
+  margin-top: 0;
+  margin-right: 0.5em;
+}
+
+.reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {
+  text-transform: unset;
+  font-variant: small-caps;
+}
+    </style>
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+<section>
+  <h1><a href="https://smilingthax.github.io/slides/rounding">C/C++ Rounding Cheat Sheet</a></h1>
+  <h3>Tobias Hoffmann</h3>
+  <h4>C++ User Treffen Aachen, 2019-07-11</h4>
+</section>
+
+<section>
+  <h2>Introduction</h2>
+
+  <ul>
+    <li class="fragment">Aim: Overview/Comparison of rounding functions
+    <li class="fragment">C/C++ are mostly the same
+    <li class="fragment">Rounding mode independent:
+      <code>floor*</code>, <code>ceil*</code>, ...
+    <li class="fragment">Rounding mode dependent:
+      <code>rint*</code>, <code>nearbyint*</code>, ...
+  </ul>
+</section>
+
+<section>
+  <h2>Floating Point Environment</h2>
+
+  <ul>
+    <li><code>&lt;fenv.h&gt;</code> / <code>&lt;cfenv&gt;</code>
+    <li class="fragment"><code>fesetround(FE_TONEAREST)</code>, <code>fegetround()</code>
+    <li class="fragment"><code>fetestexcept(mask)</code>, <code>feclearexcept(mask)</code>
+    <li class="fragment"><code>FE_INVALID</code>, <code>FE_INEXACT</code>, <code>FE_ALL_EXCEPT</code>, ...
+  </ul>
+</section>
+
+<section>
+  <h2>Floor</h2>
+
+  <img src="floor.png" class="fleft">
+
+  <pre style="box-shadow: none"><code>C:
+  double floor(double);
+  float floorf(float);
+  long double floorl(long double);
+
+C++: T={float, double, long double}
+  T std::floor(T);
+
+C++11:
+  float std::floorf(float);
+  long double std::floorl(long double);
+  double std::floor(IntegralType); </code></pre>
+
+  <ul>
+    <li><code>(long int)floor(x);</code> / <code>floorf</code> / ...
+    <li>Corresponding rounding mode: <code>FE_DOWNWARD</code>
+  </ul>
+
+</section>
+
+<section>
+  <h2>Ceil</h2>
+
+  <img src="ceil.png" class="fleft">
+
+  <pre style="box-shadow: none"><code>C:
+  double ceil(double);
+  float ceilf(float);
+  long double ceill(long double);
+
+C++: T={float, double, long double}
+  T std::ceil(T);
+
+C++11:
+  float std::ceilf(float);
+  long double std::ceill(long double);
+  double std::ceil(IntegralType); </code></pre>
+
+  <ul>
+    <li><code>(long int)ceil(x);</code> / ...
+    <li>Corresponding rounding mode: <code>FE_UPWARD</code>
+  </ul>
+
+</section>
+
+<section>
+  <h2>Truncate / Round toward zero</h2>
+
+  <img src="trunc.png" class="fleft">
+
+  <pre style="box-shadow: none"><code>C:
+  double trunc(double);
+  float truncf(float);
+  long double truncl(long double);
+
+C++11: T={float, double, long double}
+  T std::trunc(T);
+
+  float std::truncf(float);
+  long double std::truncl(long double);
+  double std::trunc(IntegralType); </code></pre>
+
+  <ul>
+    <li><code>(long int)x;</code>
+    <li>Corresponding rounding mode: <code>FE_TOWARDZERO</code>
+  </ul>
+
+</section>
+
+<section>
+  <h2>Round to nearest, <br>halfway cases away from zero</h2>
+
+  <img src="round.png" class="fleft">
+
+  <pre style="box-shadow: none"><code>C:
+  double round(double); / float roundf(float); / long double roundl(long double);
+  long int lround(double); / lroundf / lroundl
+  long long int llround(double); / ...
+
+C++11: T={float, double, long double}
+  T std::round(T);
+  long std::lround(T); / long long std::llround(T);
+
+  double std::round(IntegralType); / long std::lround(IntegralType) / std::llround </code></pre>
+
+  <ul>
+    <li>No (standardized) corresponding rounding mode!</code>
+  </ul>
+
+</section>
+
+<section>
+  <h2>Round to nearest, <br>halfway cases away from zero</h2>
+
+  <h3>- How NOT to do it -</h3>
+
+  <img src="badcast.png" class="fleft">
+
+  <pre style="box-shadow: none"><code data-noescape>
+    <del>(long int)(x + 0.5);</del>
+  </code></pre>
+
+  <ul>
+    <li class="fragment">Problem 1: &lt; 0
+    <li class="fragment">Problem 2: &geq; 2<sup>23</sup> (float)
+  </ul>
+
+  <ul>
+    <li class="fragment">And more...:
+      "<a href="http://blog.frama-c.com/index.php?post/2013/05/02/nearbyintf1">Harder than it looks: rounding float to nearest integer, part 1</a>"
+  </ul>
+
+</section>
+
+<section>
+  <h2>Round to nearest, <br>halfway cases to even</h2>
+
+  <img src="rint.png" class="fleft">
+
+  <pre style="box-shadow: none"><code>Rounding mode dependent methods (C / C++11) with default mode:
+  double rint(double); / rintf / rintl
+  T rint(T / IntegralType);
+
+  long lrint(T / IntegralType); / llrint
+
+  T nearbyint(T / IntegralType);
+
+Less commonly available (C only):
+  double roundeven(double); / roundevenf / roundevenl </code></pre>
+
+  <ul>
+    <li><code>(long int)roundeven(x);</code> / ...
+    <li>Corresponding rounding mode: <code>FE_TOWARDZERO</code>
+  </ul>
+
+</section>
+
+<section>
+  <h2>Round to nearest, <br>halfway cases upward</h2>
+
+  <ul>
+    <li><code>(long int)floor(x + 0.5);</code> / <br>
+        <code>(long int)floorf(x + 0.5f);</code>
+    <li class="fragment">Has most problems of round-nearest by cast.
+    <li class="fragment">Better: Use "halfway cases to even"!
+  </ul>
+</section>
+
+<section>
+  <h2>Rounding mode dependent</h2>
+
+  <pre style="box-shadow: none"><code>C / C++11:
+  rint* - does not raise FE_INEXACT
+
+  nearbyint* - raises FE_INEXACT
+
+  long lrint*, long long llrint*
+   - like lround / llround
+   - FE_INEXACT is also a domain error (FE_INVALID) </code></pre>
+
+</section>
+
+<!---->
+
+<section>
+  <h2>Other languages</h2>
+
+  <pre><code>Javascript:
+  x|0;   => trunc/cast (limited to 32 bit!)
+  Math.round(x);   => Round to nearest, halfway cases upwards
+  x.fixed(digits);  - halfway cases are not fully reliable!
+  Math.floor(x); / Math.ceil(x); </code></pre>
+
+  <pre class="fragment"><code>PHP:
+  $x|0; / intval($x) / (int)$x / (integer)$x;
+   => trunc/cast (limited to 32 / 64 bit!)
+
+  round($x,$precision=0,$mode=PHP_ROUND_HALF_UP)
+    - $mode=_HALF_UP | _HALF_DOWN | _HALF_EVEN | _HALF_ODD
+      since PHP 5.3
+
+  floor($x); / ceil($x); </code></pre>
+
+</section>
+
+<section>
+  <h1>Links, Questions?</h1>
+
+  <ul>
+    <li>
+      Harder than it looks: rounding float to nearest integer, part 1: <br>
+      <a href="http://blog.frama-c.com/index.php?post/2013/05/02/nearbyintf1">
+      http://blog.frama-c.com/index.php?post/2013/05/02/nearbyintf1</a>
+
+    <li>
+      Cheat sheet: <br>
+      <a href="https://thax.hardliners.org/rounding/">https://thax.hardliners.org/rounding/</a>
+  </ul>
+
+</section>
+      </div>
+    </div>
+    <script src="js/reveal.js"></script>
+    <script src="js/highlight.js"></script>
+    <script>
+Reveal.initialize({
+  center: false,
+  controlsTutorial: false
+});
+hljs.initHighlightingOnLoad();
+    </script>
+  </body>
+</html>
