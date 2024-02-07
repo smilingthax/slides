@@ -1,0 +1,425 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf8">
+    <title>std::string::resize_and_overwrite</title>
+    <link rel="stylesheet" href="css/reveal.css">
+    <link rel="stylesheet" href="css/theme/black.css">
+    <link rel="stylesheet" href="css/highlight/zenburn.css">
+    <style>
+del {
+  text-decoration: red line-through;
+/* color: red; */
+}
+
+.reveal .fleft {
+  float: left;
+  margin-top: 0;
+  margin-right: 0.5em;
+}
+
+.reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {
+  text-transform: unset;
+  font-variant: small-caps;
+}
+
+.reveal pre > code a { /* hack ... */
+  color: #fff;
+}
+    </style>
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+<section>
+  <h1 style="font-variant: unset; font-size: 2.4em">std::string::<br>resize_and_overwrite</h1>
+  <h3>Tobias Hoffmann</h3>
+  <h4>C++ User Gruppe Aachen, 2024-02-07</h4>
+</section>
+
+<section>
+  <h2>Motivation</h2>
+  <ul>
+    <li>Daniel Frey (2023-11-29):<br>
+    <a href="https://cpp-aachen.github.io/archive/2023-11-29/access_private_members/AccessPrivateMembers.pdf">Accessing Private Members the Right Way</a>
+  </ul>
+  <pre style="font-size: 0.43em" class="fragment"><code>// this pattern occurs in https://github.com/taocpp/taopq
+std::string read( const std::size_t max )
+{
+  std::string buffer;
+  buffer.resize( max ); // slow
+  const std::size_t delivered = read_from_database( buffer.data(), max );
+  buffer.resize( delivered );
+  return buffer;
+}
+
+// often ‘max’ is large (e.g. read up to 1MB), while ‘delivered’ is often small,
+// leading to the first ‘resize’ to be slow, as the string will always be
+// initialised, i.e. filled with ‘\0’.
+</code></pre>
+</section>
+
+<section>
+  <h2>Motivation</h2>
+  Proposed solution:
+  <pre style="font-size: 0.45em"><code class="lang-cpp">template&lt; typename T >
+void resize_uninitialized( std::basic_string&lt;T>&amp; v, const std::size_t n )
+{
+  if( n <= v.size() )
+  v.resize( n );
+  else {
+    if( n > v.capacity() )
+      v.reserve( n );
+    resize_uninitialized_impl( v, n );
+    // basically: calls private
+    //   v._Eos(n) [MSVC]
+    //   v.__set_size(n) [libc++]
+    //   v._M_set_length(n) [libstdc++ 11]
+  }
+}
+</code></pre>
+</section>
+
+<section>
+  <h2>Introduction</h2>
+  <ul>
+    <li>This talk is about <a href="https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p1072r10.html">P1072<span style="color: #8dcffc">R10</span></a>:
+  <pre style="width: auto;"><code data-noescape><!--
+--><span style="opacity: 0.5">template &lt;class CharT<span style="display:none">{}</span>, class Traits<span style="display:none">{}</span>, class Allocator><span style="display:none">{}</span></span>
+template &lt;typename Operation>
+constexpr void std::basic_string&lt;CharT, Traits, Allocator>::
+  resize_and_overwrite(size_type count, Operation Op);
+</code></pre>
+    and hence esp.
+  <pre style="width: auto"><code>std::string::resize_and_overwrite(count, op)</code></pre>
+    <li class="fragment">C++23
+    <li class="fragment"><code>*_overwrite</code> reminds of C++20:
+  <pre style="width: auto"><code data-noescape><!--
+--><a href="https://en.cppreference.com/w/cpp/memory/unique_ptr/make_unique">std::make_unique_for_overwrite()</a>
+<a href="https://en.cppreference.com/w/cpp/memory/shared_ptr/make_shared">std::make_shared_for_overwrite()</a>
+</code></pre>
+  </ul>
+</section>
+
+<section>
+  <h2>Detour: make_unique_for_overwrite</h2>
+  <ul>
+    <li>
+  <pre style="width: auto"><code>std::make_unique&lt;T>(args...) ≙
+std::unique_ptr&lt;T>(new T(args...))
+</code></pre>
+    <li class="fragment" data-fragment-index="1">
+  <pre style="margin: 0.3em auto; width: auto"><code>std::make_unique&lt;T>() ≙
+std::unique_ptr&lt;T>(new T())
+</code></pre>
+      <span class="fragment" data-fragment-index="4">
+      For non-class types (int/...): <i>Zero-initialized</i></span>
+    <li class="fragment" data-fragment-index="2">
+  <pre style="margin: 0.3em auto; width: auto"><code data-noescape><span class="fragment" data-fragment-index="3">std::make_unique_for_overwrite&lt;T>() ≙</span>
+std::unique_ptr&lt;T>(new T)
+</code></pre>
+      <span class="fragment" data-fragment-index="4">
+      Default-initialized ⟶ non-class: <i>No initialization</i></span>
+    <li class="fragment">
+      Read "indeterminate value": undefined behaviour!
+  </ul>
+</section>
+
+<section>
+  <h2>Agenda</h2>
+
+  <ul>
+    <li>Motivation
+    <li>Detour: std::make_unique_for_overwrite
+    <li class="fragment">Example 1: Existing Solutions
+    <li class="fragment">New Api: Basics
+    <li class="fragment">Example 1 w/ New Api
+    <li class="fragment">Proposal Language
+    <li class="fragment">std/cppreference Language
+    <li class="fragment">Example 2
+    <li class="fragment">Compiler/Library Support
+    <li class="fragment">Links
+<!--    <li class="fragment">Summary -->
+  </ul>
+</section>
+<!--           ----------------------------------      -->
+<section>
+  <h2>Example 1a</h2>
+
+  <pre style="width: auto"><code>std::string RepeatPattern(const std::string& pattern, size_t count)
+{
+  std::string ret;
+
+  const auto step = pattern.size();
+  // SUB-OPTIMAL: We memset step*count bytes only to overwrite them.
+  ret.resize(step * count);
+  for (size_t i = 0; i < count; i++) {
+    // GOOD: No bookkeeping
+    memcpy(ret.data() + i * step, pattern.data(), step);
+  }
+
+  return ret;
+}
+</code></pre>
+
+</section>
+
+<section>
+  <h2>Example 1b</h2>
+
+  <pre style="width: auto"><code style="max-height: 420px">std::string RepeatPattern(const std::string& pattern, size_t count)
+{
+  std::string ret;
+
+  ret.reserve(pattern.size() * count);
+  for (size_t i = 0; i < count; i++) {
+    // SUB-OPTIMAL:
+    // * Writes 'count' nulls
+    // * Updates size and checks for potential resize 'count' times
+    // * Does not work for C APIs
+    ret.append(pattern);
+  }
+
+  return ret;
+}
+</code></pre>
+
+</section>
+
+<section>
+  <h2>New Api: Signature</h2>
+
+  <pre><code>template &lt;typename Operation>
+constexpr void resize_and_overwrite(
+  size_type count,  // usually: std::size_t
+  Operation Op
+);
+</code></pre>
+
+  <div class="fragment">
+  with
+
+  <pre><code>size_t Operation(char* p, size_t n)
+{
+  [… write into *p, up to *(p + n) …]
+  [… store number of actually written bytes into new_n …]
+  // assert(new_n <= n);
+  return new_n;
+}
+</code></pre>
+  </div>
+
+</section>
+
+<section>
+  <h2>Example 1c</h2>
+
+  <pre style="width: auto"><code style="max-height: 450px">std::string RepeatPattern(const std::string& pattern, size_t count)
+{
+  std::string ret;
+
+  const auto step = pattern.size();
+  // GOOD: No initialization
+  ret.resize_and_overwrite(step * count, [&](char* buf, size_t n) {
+    for (size_t i = 0; i < count; i++) {
+      // GOOD: No bookkeeping
+      memcpy(buf + i * step, pattern.data(), step);
+    }
+    return step * count;
+  });
+
+  return ret;
+}
+</code></pre>
+
+</section>
+
+<section>
+  <h2>Proposal language I</h2>
+<pre style="width: auto"><code data-noescape>template &lt;class Operation><span style="display:none">{}</span>
+constexpr void resize_and_overwrite(size_type n, Operation op);
+</code></pre>
+
+  <ul style="font-size: 70%">
+    <li>
+    Effects: Alters the value of  <code>*this</code> as follows:
+    <ul>
+      <li class="fragment">If  <code>n &lt;= size()</code>, erases the last  <code>size() - n</code> elements.
+      <li class="fragment">If  <code>n > size()</code>, appends  <code>n - size()</code> default-initialized elements.
+      <li class="fragment">Invokes  <code>erase(begin() + op(data(), n), end())</code>.
+    </ul>
+
+    <li class="fragment">
+    Remarks:
+    <ul>
+      <li>If  <code>op</code> throws the behavior is undefined.
+      <li class="fragment">Let  <code>o = size()</code> before the call to resize_and_overwrite.
+      <li class="fragment">Let  <code>m = op(data(), n)</code>.
+
+      <li class="fragment"><code>m &lt;= n</code> otherwise the behavior is undefined.
+      <li class="fragment">
+      If  <code>m > o</code>,  <code>op</code> shall replace the values stored in the character array  <code>[data() + o, data() + m)</code>.<br>
+      Until replaced, the values may be indeterminate<br>
+      [Note:  <code>*(data() + o)</code> may not be  <code>charT()</code>. - end note].
+    </ul>
+  </ul>
+
+</section>
+
+<section>
+  <h2>Proposal language II</h2>
+
+  <ul style="font-size: 70%">
+    <li>Remarks(cont'd):
+    <ul>
+      <li><code>op</code> may write to  <code>data() + n + 1</code>.<br>
+      Any value written will be replaced with  <code>charT()</code> after op returns.<br>
+      [Note: This facilitiates interoperation with functions that write a trailing null. - end note ]
+
+      <li class="fragment">When  <code>op</code> is called  <code>*this</code> is in an unspecified state.<br>
+       <code>op</code> shall not bind or in any way access  <code>*this</code>.
+
+      <li class="fragment"><code>op</code> shall not allow its first argument to be accessible after it returns.
+    </ul>
+  </ul>
+</section>
+
+<section>
+  <h2>std/cppreference Language I</h2>
+
+  <ul style="font-size: 70%">
+<!--
+    <li>
+Resizes the string to contain at most count characters, using the user-provided operation  <code>op</code> to modify the possibly indeterminate contents and set the length.
+This avoids the cost of initializing a suitably-sized  <code>std::string</code> when it is intended to be used as a char array to be populated by, e.g., a C API call. -->
+
+    <li class="fragment">
+    This function performs following steps:
+
+    <ol>
+      <li class="fragment">
+      Obtains a contiguous storage that contains  <code>count + 1</code> characters, and makes its first  <code>k</code> characters equal to the first  <code>k</code> characters of  <code>*this</code>, where  <code>k = min(count, this->size())</code><br>
+      Let  <code>p</code> denote the pointer to the first character in the storage.
+      <ul>
+        <li class="fragment">
+        The equality is determined as if by checking  <code>this->compare(0, k, p, k) == 0</code>.
+        <li class="fragment">
+        The characters in  <code>[p + k, p + count]</code> may have indeterminate values.
+      </ul>
+
+      <li class="fragment">
+      Evaluates  <code>std::move(op)(p, count)</code>.<br>
+      Let  <code>r</code> be the return value of  <code>std::move(op)(p, count)</code>.
+
+      <li class="fragment">
+      Replaces the contents of  <code>*this</code> with  <code>[p, p + r)</code>, <br>
+      and set the length of  <code>*this</code> to  <code>r</code>.<br>
+      Invalidates all pointers and references to the range  <code>[p, p + count]</code>.
+    </ol>
+  </ul>
+</section>
+
+<section>
+  <h2>std/cppreference Language II</h2>
+
+  <ul style="font-size: 70%">
+    <li>
+    The program is ill-formed if  <code>r</code> does not have an integer-like type.
+
+    <li class="fragment">
+    The behavior is undefined if
+    <ul>
+      <li><code>std::move(op)(p, count)</code> throws an exception
+      <li class="fragment">or modifies  <code>p</code> or  <code>count</code>,
+      <li class="fragment"><code>r</code> is not in the range  <code>[0, count]</code>,
+      <li class="fragment">or any character in range  <code>[p, p + r)</code> has an indeterminate value.
+    </ul>
+    <br>
+
+    <li class="fragment">
+    <b style="color: #eb9">Implementations are recommended to avoid unnecessary copies and allocations</b>
+    by, e.g., making  <code>p</code> equal to the pointer to beginning of storage of characters allocated for  <code>*this</code> after the call, which can be identical to the existing storage of  <code>*this</code> if  <code>count</code> is less than or equal to  <code>this->capacity()</code>.
+
+  </ul>
+</section>
+
+<section>
+  <h2>Example 2</h2>
+
+  <pre style="width: auto"><code style="max-height: 480px">std::string CompressWrapper(std::string_view input) {
+  std::string compressed;
+  // Compute upper limit of compressed input (zlib: deflateBound())
+  const size_t bound = compressBound(input.size());
+  int err;
+
+  // GOOD: No initialization
+  compressed.resize_and_overwrite(bound, [&](char* buf, size_t n) {
+    size_t out_size = n;
+    err = compress(buf, &out_size, input.data(), input.size());
+    return out_size;
+  });
+  if (err != OK) {
+    throw ...some error...
+  }
+  return compressed;
+}
+</code></pre>
+
+</section>
+
+<section>
+  <h2>Compiler/Library Support</h2>
+
+  <ul>
+    <li>gcc/libstdc++: 12
+    <li>clang/libc++: 14 &nbsp; (Apple: 14.0.3 / Xcode 14.3)
+    <li>msvc stl: 19.31 / VS 2022 17.1
+
+    <li class="fragment">
+      <pre style="width: auto"><code>#if __cpp_lib_string_resize_and_overwrite >= 202110L
+  [...]
+#else
+  [...]
+#endif
+</code></pre>
+
+    <li class="fragment">
+      boost/container has similar api e.g. for std::vector
+  </ul>
+</section>
+
+<section>
+  <h1>Links, Questions?</h1>
+
+  <ul>
+    <li>P1072R10
+      <a style="display: block; font-size: x-large" href="https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p1072r10.html">https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p1072r10.html</a>
+
+    <li>
+      <a style="font-size: x-large" href="https://en.cppreference.com/w/cpp/string/basic_string/resize_and_overwrite">https://en.cppreference.com/w/cpp/string/basic_string/resize_and_overwrite</a>
+
+
+    <li>Daniel Frey:<br>
+        "Accessing Private Members the Right Way"<br>
+        <a style="display: block; font-size: x-large" href="https://cpp-aachen.github.io/archive/2023-11-29/access_private_members/AccessPrivateMembers.pdf">https://cpp-aachen.github.io/archive/<br>2023-11-29/access_private_members/AccessPrivateMembers.pdf</a>
+
+    <li>
+      Slides: <br>
+      <a style="display: block; font-size: x-large" href="https://smilingthax.github.io/slides/resize_overwrite/">https://smilingthax.github.io/slides/resize_overwrite/</a>
+  </ul>
+
+</section>
+      </div>
+    </div>
+    <script src="js/reveal.js"></script>
+    <script src="js/highlight.js"></script>
+    <script>
+Reveal.initialize({
+  center: false,
+  controlsTutorial: false
+});
+ hljs.configure({languages: ['cpp']});
+hljs.initHighlightingOnLoad();
+    </script>
+  </body>
+</html>
