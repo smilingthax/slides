@@ -1,0 +1,526 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf8">
+    <title>Type erasure – mal anders</title>
+    <link rel="stylesheet" href="css/reveal.css">
+    <link rel="stylesheet" href="css/theme/black.css">
+    <link rel="stylesheet" href="css/highlight/zenburn.css">
+    <style>
+del {
+  text-decoration: red line-through;
+/* color: red; */
+}
+
+/* ?
+pre:has(> code) { box-shadow: none; } ?
+*/
+
+.reveal .fleft {
+  float: left;
+  margin-top: 0;
+  margin-right: 0.5em;
+}
+
+.reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {
+  text-transform: unset;
+  font-variant: small-caps;
+}
+
+.reveal pre > code a { /* hack ... */
+  color: #fff;
+}
+
+code {
+  color: #dcdcdc;
+  background-color: #3f3f3f;
+}
+
+.reveal section img {
+  background-color: rgba(255, 255, 255, 0.8);
+}
+    </style>
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+<section>
+  <h1>Type erasure<br> – mal anders</h1>
+  <h3 style="font-size: 1.1em">(Type erasure, take two)</h2><br>
+  <h3>Tobias Hoffmann</h3>
+  <h4>C++ User Gruppe Aachen, 2026-06-10</h4>
+</section>
+
+<section>
+  <h2>Agenda</h2>
+
+  <ul style="list-style-type: none">
+    <li><b>Type Erasure 101</b>
+      <ul>
+        <li>What? Why? Alternatives?
+        <li><code>void *</code>, <code>dynamic_cast</code>
+        <li><code>std::any</code> (“type safe void *”)
+      </ul>
+    <li><b>Another Idea</b>
+      <ul>
+        <li>Motivation: Tree Visitors
+        <li><code>std::any</code> revisited
+        <li>Lock-and-Key Principle
+        <li>Example, Implementation idea
+        <li><code>Opaque</code>, <code>unique_anyptr</code>, <code>shared_anyptr</code>
+      </ul>
+  </ul>
+</section>
+
+<section>
+  <h2>What is Type Erasure?</h2>
+
+  <ul>
+    <li>“Forget” the original <em>compile-time</em> type
+    <li class="fragment">Only for pointers!
+    <li class="fragment">Why not (e.g.) <code>int *</code>?
+      <ul>
+        <li class="fragment">Pointer arithmetic: <code>pInt32++</code> &rarr; <code>addr += 4</code>
+        <li class="fragment">Alignment
+        <li class="fragment">Just use <code>char *</code>!
+        <li class="fragment">Or even better: <code>void *</code>
+      </ul>
+    <li class="fragment">How: <code>static_cast&lt;void *&gt;(p)</code> / <code>&lt;T *&gt;</code>
+    <li class="fragment">Possibly: <code>reinterpret_cast&lt;intptr_t&gt;(p)</code>
+  </ul>
+</section>
+
+<section>
+  <h2>Features of void *</h2>
+
+  <ul>
+    <li>No dereferencing (<code>*pVoid</code> &rarr; compiler error)
+    <li class="fragment">Consider <code>pVoid += N</code>:
+    <li class="fragment"><code>pVoid += N * sizeof(*pVoid)</code>
+    <li class="fragment">Does not work (as per Standard):
+      <ul>
+        <li>MSVC: <code style="font-size: 75%">error C2036: 'void *': unknown size</code>
+        <li>CLANG: <code style="font-size: 75%">error: arithmetic on a pointer to void</code>
+      </ul>
+    <li class="fragment">Extensions... (as if <code>sizeof(...) == 1</code>)
+      <ul>
+        <li>GCC: <code style="font-size: 75%">warning: pointer of type 'void *' used in arithmetic [-Wpointer-arith]</code>
+      </ul>
+  </ul>
+</section>
+
+<section>
+  <h2>Why even use Type Erasure?</h2>
+
+Examples:
+  <ul>
+    <li class="fragment"><code>someCallback(…, void *userData)</code>
+    <li class="fragment"><code>std::map&lt;int, …different types…&gt</code>
+    <li class="fragment"><code>printf("%s: %d\n", "foo", 5)</code>
+    <li class="fragment"><code>std::vformat(std::string_view fmt, std::format_args args)</code>
+    <li class="fragment"><code>std::function&lt;int()&gt; fn = []() { … }</code>
+  </ul>
+</section>
+
+<section>
+  <h2>Common alternatives</h2>
+
+  <ul>
+    <li><code>std::variant&lt;std::monostate,Foo,int&gt;</code>
+        (a.k.a. “Tagged Union”)
+    <li class="fragment"><code>template &lt;class T&gt; …</code>
+    <li class="fragment">Base + Derived (runtime polymorphism)
+      <ul>
+        <li class="fragment">most extreme: everything derives from <code>Object</code>, <code>IUnknown</code> (outside of C++ type system), …
+        <li class="fragment">even when original class hierarchies cannot be altered, composition is usually possible
+      </ul>
+  </ul>
+</section>
+
+<section>
+  <h2>Problems with void *</h2>
+
+  <ul>
+    <li class="fragment"><i><b>Zero</b></i> type safety
+    <li class="fragment">Destructor?
+    <li class="fragment">Strict aliasing violations possible
+      <ul>
+        <li class="fragment">Different pointer types expected to point to different memory locations
+        <li class="fragment"><b>Only</b> <code>char *</code>, <code>signed/unsigned char *</code> (and <code>std::byte</code> in C++17)) are safe
+      </ul>
+    <li class="fragment">Code intent unclear to human readers
+    <li class="fragment">Idea: Use <code>void *</code> as “Base” …
+  </ul>
+</section>
+
+<section>
+  <h2>When to <span style="font-size: smaller">(not)</span> use dynamic_cast?</h2>
+
+  <pre><code>//void *p = ...; // not a complete class type
+                 // (and not polymorphic, either)
+Base *p = ...; // = nullptr;
+
+if (Foo *pf = dynamic_cast&lt;Foo *&gt;(p)) {
+  // ...
+}
+
+// or: Foo &f = dynamic_cast&lt;Foo &amp;&gt;(*p);  // &rarr; std::bad_cast</code></pre>
+
+  <ul style="font-size: 99%">
+    <li class="fragment">Pointer value is <em>valid</em> (or <code style="font-size: smaller">nullptr</code>)
+    <li class="fragment">RTTI is not disabled (<code>-fno-rtti</code>)<br>
+      (except for cases already handled by <code style="font-size: smaller">static_cast</code>)
+    <li class="fragment">Object is of <em>polymorphic type</em>: <code style="font-size: smaller">std::is_polymorphic</code><br>
+      &rarr; has at least one virtual function (possibly via base)
+  </ul>
+</section>
+
+<section>
+  <h2>std::any (“type safe void *”)</h2>
+
+  <pre><code>// std::any foo = User{"Alice", 30};  // temporary object
+std::any foo = std::make_any&lt;User&gt;("Alice", 30);  // RVO (mandatory)
+
+if (std::string *foo = std::any_cast&lt;std::string&gt;(&amp;foo)) {
+  // ...
+}
+
+// or: std::string &amp;bar = std::any_cast&lt;std::string &amp;&gt;(foo);
+                          // &rarr; std::bad_any_cast</code></pre>
+
+  <ul>
+    <li>C++17 [with RTTI] <span class="fragment">(alternative: <code>boost::any</code>)</span>
+    <li class="fragment">Value semantics. <span class="fragment">Copyable.</span> <span class="fragment">Memory-safe (dtor).</span>
+    <li class="fragment">
+      <code>std::any ap = std::unique_ptr&lt;…&gt;(…)</code> (<code>unique_ptr</code> is move-only … &rarr; C++23)
+    <li class="fragment">
+      “Interface”: Clone/Copy, Destroy
+  </ul>
+</section>
+
+<section>
+  <h2>Another way?</h2>
+
+  <ul>
+    <li>Questions so far?
+    <li class="fragment">Does <code>std::any</code> allow extracting Base for Derived?
+    <li class="fragment">Interfaces, (Runtime) Duck typing, …
+    <li class="fragment"><code>IUnknown::QueryInterface</code>, possibly dynamically (not in COM!)
+    <li class="fragment">Data-oriented design (one pointer per type, separate arrays, …)
+    <li class="fragment">Entity-Component-System (ECS)
+  </ul>
+</section>
+
+
+<section>
+  <h2>Motivation: Tree Visitors</h2>
+
+  <img src="regex1.svg" width="36%" class="fleft plain">
+  <ul style="width: 56%">
+    <li>Scenario: Traversing a complex Tree Structure, e.g. Abstract Syntax Tree (AST)
+    <li class="fragment">Polymorphic node types<br>
+      &rarr; Visitor pattern
+    <li class="fragment">Possibly implicit: during parse, only stack "exists"
+    <li class="fragment">Idea: Build <code>map</code>, <code>vector</code>, …
+  </ul>
+</section>
+
+<section>
+  <h2>JSON: The Stack</h2>
+
+  <img src="jsonstack1.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>JSON: The Dilemma</h2>
+
+  <ul>
+    <li>Problem: Inner nodes are visited multiple times.<br>
+      Information on the way down also needed on the way back up.
+    <li class="fragment">Solution A: Visitor maintains a parallel,
+      manual stack “synced” with the traversal depth.
+    <li class="fragment">What is the <code>value_type</code> of the (e.g.) <code>std::stack&lt;T&gt;</code>?
+  </ul>
+</section>
+
+<section>
+  <h2>JSON: The second Stack</h2>
+
+  <img src="jsonstack2_variant.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>JSON: The third Stack…?</h2>
+
+  <img src="jsonstack2_vecs.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>JSON: Unified Stack!</h2>
+
+  <img src="jsonstack3.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>std::any revisited: The scene</h2>
+
+  <img src="blackbox1.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>std::any revisited: The key</h2>
+
+  <img src="blackbox2.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>The Lock-and-Key Principle</h2>
+
+  <img src="lockkey1.svg" class="plain">
+  <ul>
+    <li>Key is required to store and retrieve the “contents” to/from the “storage”.
+    <li class="fragment">Lock allows only exact match (here).
+    <li class="fragment">But: Key does not have to be the “type”!
+  </ul>
+</section>
+
+<section>
+  <h2>Reification</h2>
+
+  <img src="blackbox3.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>Object instance as key</h2>
+
+  <img src="blackbox3b.svg" style="max-height: 530px" class="plain">
+</section>
+
+<section>
+  <h2>Opaque: Example (I)</h2>
+
+  <pre><code style="max-height: 480px">// type-distinct alias, for overloading
+struct sequence_t : Opaque {
+  sequence_t() = default;
+  sequence_t(Opaque &&o) : Opaque(std::move(o)) { }
+};
+// ... struct alternative_t : Opaque
+
+void AST::Sequence::visit(Visitor &v) {
+  sequence_t s;
+
+  v.begin(s);
+  for (auto &child : children) {
+    v.seq(s);  // (e.g.)
+    child.visit(v);
+  }
+  v.end(s);
+}</code></pre>
+
+</section>
+
+<section>
+  <h2>Opaque: Example (II)</h2>
+
+  <pre><code style="max-height: 480px">sequence_t::Accessor&lt;MySequence *&gt; access_seq; // = Opaque::…
+alternative_t::Accessor&lt;MyAlternative *&gt; access_alt;
+
+void MyVisitor::begin(sequence_t &amp;s) /*override*/ {
+  s.set(access_seq, new MySequence);
+}
+
+void MyVisitor::seq(sequence_t &amp;s) /*override*/ {
+  // assert(s.is(access_seq));
+  auto node = s.get(access_seq);
+  …
+}
+
+void MyVisitor::end(sequence_t &amp;s) /*override*/ {
+  std::unique_ptr&lt;MySequence&gt; node(s.release(access_seq));
+  …
+}</code></pre>
+
+</section>
+
+<section>
+  <h2>Architecture</h2>
+
+  <ul>
+    <li>
+Principle: Separating Data and Access
+    <li class="fragment">
+Storage (<code>Opaque</code>): Holds only an <code>intptr_t</code> and a pointer to a vtable (<code>Accessor_base</code>).
+    <li class="fragment">
+Key (<code>Accessor&lt;T&gt;</code>): Only the correct accessor instance can get, set, release the data.
+    <li class="fragment">
+Lock: Invalid pointer casting prevented via strict instance-equality checks (<code>access == &amp;_access</code>).
+    <li class="fragment">
+Destructor of <code>Opaque</code> uses stored Accessor-pointer for cleanup.
+  </ul>
+
+</section>
+
+<section>
+  <h2>Implementation idea (I)</h2>
+
+  <pre style="width: auto"><code style="max-height: 480px">class Opaque {
+public:
+  template &lt;typename T, typename Deleter = …std::default_delete&lt;T&gt;…&gt;
+  class Accessor;
+
+  // ctor, dtor, move, swap, get, release, set, is, reset …
+
+private:
+  class Accessor_base {
+    virtual void destroy(intptr_t data) const = 0;
+    friend class Opaque;
+  };
+
+  intptr_t data = {};
+  const Accessor_base *access = {};
+};</code></pre>
+
+</section>
+
+<section>
+  <h2>Implementation idea (II)</h2>
+
+  <pre style="width: auto"><code style="max-height: 480px; font-size: 98%">template &lt;typename T, typename Deleter&gt;
+class Opaque::Accessor&lt;T *,Deleter&gt; : public Opaque::Accessor_base {
+public:
+  typedef T *value_type;
+
+  value_type operator()(intptr_t data) const {
+    return reinterpret_cast&lt;value_type&gt;(data);
+  }
+
+private:
+  void destroy(intptr_t data) const override {
+    del(operator()(data));
+  }
+  Deleter del;
+};
+
+// Accessor&lt;…, nullptr_t&gt; (no deleter); Accessor&lt;int, …&gt;
+</code></pre>
+
+</section>
+
+<section>
+  <h2>Implementation idea (III)</h2>
+
+  <pre style="width: auto"><code style="max-height: 480px; font-size: 98%">template &lt;typename Access&gt;
+typename Access::value_type Opaque::get(Access &amp;_access) const {
+  if (access != &amp;_access) {
+    return {};
+  }
+  return _access(data);
+}
+
+template &lt;typename Access&gt;
+void Opaque::set(Access &amp;_access, typename Access::value_type _data) {
+  if (access == &amp;_access && _access(data) == _data) {
+    return; // unchanged
+  } else if (access) {
+    access-&gt;destroy(data);
+  }
+  data = reinterpret_cast&lt;intptr_t&gt;(_data);
+  access = &amp;_access;
+}</code></pre>
+
+</section>
+
+<section>
+  <h2>Summary/Recap</h2>
+
+  <ul>
+    <li>
+Address of the Accessor is the key, must stay alive (singleton / static) until last <code>Opaque</code> dtor ran.
+    <li class="fragment">
+<code>intptr_t</code> (specializations: w/ vs. w/o <code>Deleter</code>).
+    <li class="fragment">
+Key usually directly available (same file, …).
+    <li class="fragment">
+Bad key: <code>std::bad_cast</code> / <code>nullptr</code> / <code>.is(…)</code>
+    <li class="fragment">
+No <code>typeid(…)</code>, <code>dynamic_cast</code>, RTTI, … used/needed.
+    <li class="fragment">
+Minimal memory requirements (<code>intptr_t</code> + <code>const Accessor_base *</code>) at <code>Opaque</code>.
+  </ul>
+</section>
+
+<section>
+  <h2>unique_anyptr</h2>
+
+  <ul>
+    <li>PImpl Idiom (Pointer to implementation)
+    <li class="fragment">
+      Often <code>std::unique_ptr&lt;Impl&gt;</code> with only private / forward declared <code>struct Impl;</code>
+    <li class="fragment">
+      Works, as long as destructor (<code>= default;</code>) not in header, but in implementation.
+    <li class="fragment">
+      Why not hide it fully?
+    <li class="fragment">
+      <code>unique_anyptr impl;</code> (in header / public class)
+    <li class="fragment">
+      <code>unique_anyptr::Accessor&lt;Impl&gt; access_impl</code>
+    <li class="fragment">(not on public github yet)
+  </ul>
+</section>
+
+<section>
+  <h2>shared_anyptr</h2>
+
+  <ul>
+    <li>But what if I need a shared pointer?
+    <li class="fragment">Don't reinvent the wheel, also wrt. interop!
+    <li class="fragment"><code>std::shared_ptr&lt;void&gt;</code> to the rescue:
+    <li class="fragment"><code>template &lt;class Y, class Deleter&gt;<br>
+void reset(Y *p, Deleter d)</code>
+<br>
+I.e.: Deleter is type erased (but can also be just a function pointer)
+    <li class="fragment">
+      <code>std::dynamic_pointer_cast<T>(…)</code> will not work (<code>dynamic_cast</code> under the hood!)
+    <li class="fragment">(github code does not have interop yet)
+  </ul>
+</section>
+
+<section>
+  <h2>Links, Questions?</h2>
+
+  <ul style="font-size: 95%">
+    <li>Opaque:
+      <a style="font-size: x-large" href="https://github.com/smilingthax/rexgen/blob/master/opaque.h">https://github.com/smilingthax/rexgen/blob/master/opaque.h</a>
+      <a style="font-size: x-large" href="https://github.com/smilingthax/rexgen/blob/master/re-builder_base.h#L11">https://github.com/smilingthax/rexgen/blob/master/re-builder_base.h#L11</a>
+      <a style="font-size: x-large" href="https://github.com/smilingthax/rexgen/blob/master/re-builder.cpp#L11">https://github.com/smilingthax/rexgen/blob/master/re-builder.cpp#L11</a>
+
+    <li>shared_anyptr:
+      <a style="font-size: x-large" href="https://github.com/smilingthax/unpdf/blob/master/lsyscpp/shared_anyptr.h">https://github.com/smilingthax/unpdf/blob/master/lsyscpp/shared_anyptr.h</a>
+
+    <li>Interfaces:
+      <a style="font-size: x-large" href="https://github.com/wickedmic/any">https://github.com/wickedmic/any</a>,
+      <a style="font-size: x-large" href="https://github.com/smilingthax/poly">https://github.com/smilingthax/poly</a>
+
+    <li>PImpl:
+      <a style="font-size: x-large" href="https://en.cppreference.com/cpp/language/pimpl">https://en.cppreference.com/cpp/language/pimpl</a>
+
+    <li>
+      Slides: <br>
+      <a style="display: block; font-size: x-large" href="https://smilingthax.github.io/slides/type_erasure_take_two/">https://smilingthax.github.io/slides/type_erasure_take_two/</a>
+  </ul>
+</section>
+
+      </div>
+    </div>
+    <script src="js/reveal.js"></script>
+    <script src="js/highlight.js"></script>
+    <script>
+Reveal.initialize({
+  center: false,
+  controlsTutorial: false
+});
+ hljs.configure({languages: ['cpp']});
+hljs.initHighlightingOnLoad();
+    </script>
+  </body>
+</html>
